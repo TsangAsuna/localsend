@@ -287,6 +287,47 @@ Future<void> _pickMedia(BuildContext context, Ref ref) async {
             converter: CrossFileConverters.convertAssetEntity,
           ),
         );
+
+    // Copy the files out of the media store in the background so that the
+    // selection list appears immediately.
+    // ignore: discarded_futures
+    _loadAssetFiles(ref, result);
+  }
+}
+
+/// Copies the files of the picked [assets] out of the media store in the
+/// background and reports them to the selection.
+Future<void> _loadAssetFiles(Ref ref, List<AssetEntity> assets) async {
+  for (final asset in assets) {
+    final AssetFileDetails details;
+    try {
+      details = await CrossFileConverters.loadAssetFileDetails(asset);
+    } catch (e) {
+      _logger.warning('Could not load the file of the asset ${asset.id}', e);
+      ref
+          .redux(selectedSendingFilesProvider)
+          .dispatch(
+            UpdateAssetFileAction(
+              asset: asset,
+              path: null,
+              size: null,
+              lastModified: null,
+              failed: true,
+            ),
+          );
+      continue;
+    }
+    ref
+        .redux(selectedSendingFilesProvider)
+        .dispatch(
+          UpdateAssetFileAction(
+            asset: asset,
+            path: details.path,
+            size: details.size,
+            lastModified: details.lastModified,
+            failed: details.failed,
+          ),
+        );
   }
 }
 

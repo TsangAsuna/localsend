@@ -13,19 +13,40 @@ import 'package:wechat_assets_picker/wechat_assets_picker.dart';
 
 /// Utility functions to convert third party models to common [CrossFile] model.
 class CrossFileConverters {
+  /// Adds a media asset to the list without loading the actual file.
+  ///
+  /// Copying the file out of the media store can take seconds, so it is
+  /// done in the background via [loadAssetFileDetails] after the selection
+  /// list has already been shown.
   static Future<CrossFile> convertAssetEntity(AssetEntity asset) async {
-    final file = (await asset.originFile)!;
-    final metadata = await readFileMetadata(path: file.path);
     return CrossFile(
       name: await asset.titleAsync,
       fileType: asset.type == AssetType.video ? FileType.video : FileType.image,
-      size: await file.length(),
+      size: -1, // unknown until the file has been loaded
       thumbnail: null,
       asset: asset,
-      path: file.path,
+      path: null, // loaded in the background
       bytes: null,
+      lastModified: null,
+      lastAccessed: null,
+    );
+  }
+
+  /// Loads the actual file of an [asset] that was added with
+  /// [convertAssetEntity].
+  ///
+  /// This copies the file out of the media store into the app cache, which
+  /// is required for sending it later.
+  static Future<AssetFileDetails> loadAssetFileDetails(AssetEntity asset) async {
+    final file = await asset.originFile;
+    if (file == null) {
+      return const AssetFileDetails(failed: true);
+    }
+    final metadata = await readFileMetadata(path: file.path);
+    return AssetFileDetails(
+      path: file.path,
+      size: await file.length(),
       lastModified: metadata?.modified,
-      lastAccessed: metadata?.accessed,
     );
   }
 
@@ -107,8 +128,32 @@ class CrossFileConverters {
   }
 }
 
+/// The loaded file details of a media asset.
+class AssetFileDetails {
+  final String path;
+  final int size;
+
+  /// RFC 3339 in UTC.
+  final String? lastModified;
+
+  /// Whether the file could not be loaded at all.
+  final bool failed;
+
+  const AssetFileDetails({
+    this.path = '',
+    this.size = -1,
+    this.lastModified,
+    this.failed = false,
+  });
+}
+
 extension CompareFile on CrossFile {
   bool isSameFile({required CrossFile otherFile}) {
+    if (asset != null && otherFile.asset != null) {
+      // Media assets are identified by their asset id because the path is
+      // only available after the file has been loaded in the background.
+      return asset!.id == otherFile.asset!.id;
+    }
     return (path ?? '') == (otherFile.path ?? '');
   }
 }

@@ -16,6 +16,7 @@ import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:share_handler/share_handler.dart';
+import 'package:wechat_assets_picker/wechat_assets_picker.dart';
 import 'package:uuid/uuid.dart';
 
 final _logger = Logger('SelectedSendingFiles');
@@ -61,14 +62,14 @@ class SelectedSendingFilesNotifier extends ReduxNotifier<List<CrossFile>> {
     }
     _logger.info('Waiting for the metadata of ${files.where((file) => file.size < 0).length} file(s)');
     await waitForPendingMetadata().timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 60),
       onTimeout: () {
         _logger.warning('Timeout while waiting for the file metadata');
       },
     );
 
     // Re-read the state because the files were updated in place.
-    return state.where((file) => files.any((f) => f.path == file.path)).toList();
+    return state.where((file) => files.any((f) => f.isSameFile(otherFile: file))).toList();
   }
 
   void _resolvePendingMetadata() {
@@ -234,6 +235,60 @@ class UpdateFileMetadataAction extends ReduxAction<SelectedSendingFilesNotifier,
       path: oldFile.path,
       bytes: oldFile.bytes,
       lastModified: update.lastModified ?? oldFile.lastModified,
+      lastAccessed: oldFile.lastAccessed,
+    );
+    return List<CrossFile>.unmodifiable([...state]..[index] = newFile);
+  }
+
+  @override
+  void after() {
+    notifier._resolvePendingMetadata();
+  }
+}
+
+/// Updates the loaded file of a media asset that was added with incomplete
+/// information.
+///
+/// Copying a media file out of the media store is slow, so it is done in the
+/// background after the selection has already been shown.
+class UpdateAssetFileAction extends ReduxAction<SelectedSendingFilesNotifier, List<CrossFile>> {
+  final AssetEntity asset;
+  final String? path;
+  final int? size;
+  final String? lastModified;
+  final bool failed;
+
+  UpdateAssetFileAction({
+    required this.asset,
+    required this.path,
+    required this.size,
+    required this.lastModified,
+    this.failed = false,
+  });
+
+  @override
+  List<CrossFile> reduce() {
+    final index = state.indexWhere((file) => file.asset?.id == asset.id);
+    if (index < 0) {
+      // The file is no longer selected.
+      return state;
+    }
+
+    if (failed) {
+      _logger.warning('Could not load the file of the asset ${asset.id}');
+      return List<CrossFile>.unmodifiable([...state]..removeAt(index));
+    }
+
+    final oldFile = state[index];
+    final newFile = CrossFile(
+      name: oldFile.name,
+      fileType: oldFile.fileType,
+      size: size ?? oldFile.size,
+      thumbnail: oldFile.thumbnail,
+      asset: oldFile.asset,
+      path: path ?? oldFile.path,
+      bytes: oldFile.bytes,
+      lastModified: lastModified ?? oldFile.lastModified,
       lastAccessed: oldFile.lastAccessed,
     );
     return List<CrossFile>.unmodifiable([...state]..[index] = newFile);
