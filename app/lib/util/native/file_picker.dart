@@ -145,7 +145,9 @@ class PickFileAction extends AsyncGlobalAction {
 
 Future<void> _pickFiles(BuildContext context, Ref ref) async {
   if (checkPlatform([TargetPlatform.android])) {
-    // On android, the files are copied to the cache which takes some time.
+    // On android, the metadata of the picked files is loaded in the background
+    // which takes some time. The loading dialog is removed as soon as the
+    // selection appears.
     // ignore: unawaited_futures
     showDialog(
       context: context,
@@ -155,13 +157,19 @@ Future<void> _pickFiles(BuildContext context, Ref ref) async {
   }
   try {
     if (defaultTargetPlatform == TargetPlatform.android) {
+      // Register the update listener before the picker is opened, so no
+      // metadata update of the (potentially fast) background loading is lost.
+      android_channel.listenPickerUpdates((update) {
+        ref.redux(selectedSendingFilesProvider).dispatch(UpdateFileMetadataAction(update));
+      });
+
       final result = await android_channel.pickFilesAndroid();
       if (result != null) {
         await ref
             .redux(selectedSendingFilesProvider)
             .dispatchAsync(
               AddFilesAction(
-                files: result,
+                files: result.files,
                 converter: CrossFileConverters.convertFileInfo,
               ),
             );

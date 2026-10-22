@@ -2,6 +2,7 @@ import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
+import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/send_mode.dart';
 import 'package:localsend_app/pages/device_details_page.dart';
 import 'package:localsend_app/pages/selected_files_page.dart';
@@ -105,7 +106,7 @@ class SendTab extends StatelessWidget {
                       ),
                       const SizedBox(height: 5),
                       Text(t.sendTab.selection.files(files: vm.selectedFiles.length)),
-                      Text(t.sendTab.selection.size(size: vm.selectedFiles.fold(0, (prev, curr) => prev + curr.size).asReadableFileSize)),
+                      Text(t.sendTab.selection.size(size: vm.selectedFiles.pendingAwareTotalSize)),
                       const SizedBox(height: 10),
                       SizedBox(
                         height: defaultThumbnailSize,

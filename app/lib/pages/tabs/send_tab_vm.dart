@@ -133,6 +133,13 @@ final sendTabVmProvider = ViewProvider((ref) {
         if (files.isEmpty || !context.mounted) {
           return;
         }
+
+        // On Android, the metadata of the picked files may still be loading.
+        files = await ref.notifier(selectedSendingFilesProvider).resolveFiles(files);
+        if (files.isEmpty || !context.mounted) {
+          return;
+        }
+
         await context.push(() => WebSharePage(files: files));
         return;
       }

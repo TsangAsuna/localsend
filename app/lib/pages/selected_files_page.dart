@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:localsend_app/gen/strings.g.dart';
+import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/ui/nav_bar_padding.dart';
@@ -42,7 +43,7 @@ class SelectedFilesPage extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(t.sendTab.selection.files(files: selectedFiles.length)),
-                        Text(t.sendTab.selection.size(size: selectedFiles.fold(0, (prev, curr) => prev + curr.size).asReadableFileSize)),
+                        Text(t.sendTab.selection.size(size: selectedFiles.pendingAwareTotalSize)),
                       ],
                     ),
                   ),
@@ -97,7 +98,7 @@ class SelectedFilesPage extends StatelessWidget {
                                       overflow: TextOverflow.fade,
                                       softWrap: false,
                                     ),
-                                    Text(file.size.asReadableFileSize, style: Theme.of(context).textTheme.bodySmall),
+                                    Text(file.size < 0 ? '…' : file.size.asReadableFileSize, style: Theme.of(context).textTheme.bodySmall),
                                   ],
                                 ),
                               ),

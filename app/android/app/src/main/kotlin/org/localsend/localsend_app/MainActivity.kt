@@ -10,8 +10,11 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.util.Log
 import android.webkit.MimeTypeMap
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -21,9 +24,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.Executors
 
 
 private const val CHANNEL = "org.localsend.localsend_app/localsend"
+private const val PICKER_UPDATE_CHANNEL = "org.localsend.localsend_app/picker"
+private const val TAG = "MainActivity"
 private const val REQUEST_CODE_PICK_DIRECTORY = 1
 private const val REQUEST_CODE_PICK_DIRECTORY_PATH = 2
 private const val REQUEST_CODE_PICK_FILE = 3
@@ -36,6 +42,20 @@ private const val API_LEVEL_ANDROID_17 = 37
 class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
     private var pendingPermissionResult: MethodChannel.Result? = null
+
+    /**
+     * Channel used to push asynchronous updates (e.g. the metadata of picked
+     * files) from the native side to Dart.
+     */
+    private var pickerUpdateChannel: MethodChannel? = null
+
+    /**
+     * Executes the potentially slow work for picked files (taking the
+     * persistable uri permission and querying the document provider) so that
+     * the main thread is never blocked by it.
+     */
+    private val pickerExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /// share_handler drops share intents arriving via onNewIntent while the Dart side
     /// is not subscribed to its media stream yet, which happens when this singleTask
@@ -76,6 +96,10 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        pickerUpdateChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            PICKER_UPDATE_CHANNEL
+        )
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL
@@ -395,28 +419,124 @@ class MainActivity : FlutterActivity() {
                 val takeFlags: Int =
                     data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
 
-                val resultList = mutableListOf<FileInfo>()
-                for (uri in uriList) {
-                    contentResolver.takePersistableUriPermission(uri, takeFlags)
-                    val documentFile = FastDocumentFile.fromDocumentUri(this, uri)
-                    if (documentFile == null) {
-                        pendingResult?.error("Error", "Failed to access file", null)
-                        return
-                    }
-                    resultList.add(
-                        FileInfo(
-                            name = documentFile.name,
-                            size = documentFile.size,
-                            uri = uri.toString(),
-                            lastModified = documentFile.lastModified?.toRfc3339(),
-                        )
-                    )
-                }
-
-                pendingResult?.success(resultList.map { it.toMap() })
+                // Phase 1: reply immediately with metadata that can be derived
+                // without querying the document provider. Querying a content uri
+                // may take seconds (cloud-backed providers, sd cards, slow OEM
+                // file managers) and must not block the transition back to the
+                // app, otherwise the selection list appears with a long delay.
+                pendingResult?.success(
+                    mapOf(
+                        "files" to uriList.map { uri -> quickFileInfo(uri).toMap() },
+                        "complete" to false,
+                    ),
+                )
                 pendingResult = null
+
+                // Phase 2: take the persistable uri permission and read the
+                // real metadata on a background thread. The results are pushed
+                // to Dart via the picker update channel once they are ready.
+                pickerExecutor.execute {
+                    for (uri in uriList) {
+                        if (takeFlags != 0) {
+                            try {
+                                contentResolver.takePersistableUriPermission(uri, takeFlags)
+                            } catch (e: Exception) {
+                                // The uri permission of some providers (e.g. on
+                                // Xiaomi HyperOS) cannot be persisted. The
+                                // temporary grant is still valid while the
+                                // activity lives, so this is not fatal.
+                                Log.w(TAG, "Could not take persistable uri permission for $uri", e)
+                            }
+                        }
+
+                        val documentFile = try {
+                            FastDocumentFile.fromDocumentUri(this, uri)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Could not read metadata of $uri", e)
+                            null
+                        }
+
+                        val update: Map<String, Any?> = if (documentFile != null) {
+                            mapOf(
+                                "uri" to uri.toString(),
+                                "name" to documentFile.name,
+                                "size" to documentFile.size,
+                                "lastModified" to documentFile.lastModified?.toRfc3339(),
+                                "failed" to false,
+                            )
+                        } else {
+                            mapOf(
+                                "uri" to uri.toString(),
+                                "failed" to true,
+                            )
+                        }
+
+                        mainHandler.post {
+                            try {
+                                pickerUpdateChannel?.invokeMethod("onFileInfo", update)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not send file info update for $uri", e)
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * Best-effort metadata for a picked document that does not require a query
+     * to the document provider (which may live in another process and be slow).
+     *
+     * The document id of the external storage provider ("primary:Download/a.txt")
+     * and the raw paths of the downloads provider ("raw:/storage/...") can be
+     * resolved with a local file system access.
+     *
+     * When the metadata cannot be derived locally, a temporary name and an
+     * unknown size (-1) are returned. The real metadata arrives later via the
+     * picker update channel.
+     */
+    @Suppress("DEPRECATION")
+    private fun quickFileInfo(uri: Uri): FileInfo {
+        var localPath: String? = null
+        try {
+            val documentId = DocumentsContract.getDocumentId(uri)
+            localPath = when {
+                documentId.startsWith("primary:") ->
+                    "${Environment.getExternalStorageDirectory().absolutePath}/${documentId.substring("primary:".length)}"
+
+                documentId.startsWith("raw:") -> documentId.substring("raw:".length)
+                else -> null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not parse document id of $uri", e)
+        }
+
+        if (localPath != null) {
+            try {
+                val file = java.io.File(localPath)
+                if (file.isFile) {
+                    return FileInfo(
+                        name = file.name,
+                        size = file.length(),
+                        uri = uri.toString(),
+                        lastModified = file.lastModified().takeIf { it > 0L }?.toRfc3339(),
+                    )
+                }
+            } catch (e: Exception) {
+                // Direct access is not allowed (e.g. non-media files on
+                // Android 11+ without the manage storage permission).
+                // Fall through to the fallback below.
+            }
+        }
+
+        val fallbackName = uri.lastPathSegment?.substringAfterLast('/') ?: uri.toString()
+        return FileInfo(
+            name = fallbackName,
+            size = -1,
+            uri = uri.toString(),
+            lastModified = null,
+        )
     }
 
     private fun listFiles(uri: Uri, files: MutableList<FileInfo>) {

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:dart_mappable/dart_mappable.dart';
 import 'package:localsend_isolates/model/file_type.dart';
+import 'package:localsend_isolates/util/file_size_helper.dart';
 import 'package:wechat_assets_picker/wechat_assets_picker.dart';
 
 part 'cross_file.mapper.dart';
@@ -36,5 +37,18 @@ class CrossFile with CrossFileMappable {
   @override
   String toString() {
     return 'CrossFile(name: $name, fileType: $fileType, size: $size, thumbnail: ${thumbnail != null ? thumbnail!.length : 'null'}, asset: $asset, path: $path, bytes: ${bytes != null ? bytes!.length : 'null'})';
+  }
+}
+
+extension CrossFileListHelper on Iterable<CrossFile> {
+  /// Formats the total size of the files.
+  ///
+  /// Shows an ellipsis while the metadata of some files is still being loaded
+  /// (Android reports picked files in two phases).
+  String get pendingAwareTotalSize {
+    if (any((file) => file.size < 0)) {
+      return '…';
+    }
+    return fold<int>(0, (prev, curr) => prev + curr.size).asReadableFileSize;
   }
 }

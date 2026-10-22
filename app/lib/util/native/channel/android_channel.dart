@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 part 'android_channel.mapper.dart';
 
 const _methodChannel = MethodChannel('org.localsend.localsend_app/localsend');
+const _pickerUpdateChannel = MethodChannel('org.localsend.localsend_app/picker');
 final _logger = Logger('AndroidSaf');
 
 /// From Android 10 and above, we need to use the Storage Access Framework (SAF) to access files due to the scoped storage.
@@ -30,13 +31,83 @@ Future<String?> pickDirectoryPathAndroid() async {
   return result;
 }
 
-Future<List<FileInfo>?> pickFilesAndroid() async {
-  final result = await _methodChannel.invokeMethod<List>('pickFiles');
+/// Result of [pickFilesAndroid].
+///
+/// Android reports the picked files in two phases so that the selection list
+/// appears immediately: [files] contains best-effort metadata right away and,
+/// when [complete] is false, the final metadata is delivered later via
+/// [listenPickerUpdates].
+class PickFilesResult {
+  final List<FileInfo> files;
+
+  /// Whether [files] already contains the final metadata.
+  final bool complete;
+
+  PickFilesResult({
+    required this.files,
+    required this.complete,
+  });
+}
+
+/// An update for a file that was picked with [pickFilesAndroid].
+///
+/// Reading the metadata of a content uri may be slow (the document provider
+/// can live in another process), so it is delivered asynchronously.
+class PickerFileUpdate {
+  /// The content uri of the file, used to identify it in the selection.
+  final String uri;
+  final String? name;
+
+  /// The size in bytes or null when unknown.
+  final int? size;
+
+  /// RFC 3339 in UTC. Null when the document provider does not know it.
+  final String? lastModified;
+
+  /// Whether the metadata could not be read at all.
+  final bool failed;
+
+  PickerFileUpdate({
+    required this.uri,
+    required this.name,
+    required this.size,
+    required this.lastModified,
+    required this.failed,
+  });
+}
+
+Future<PickFilesResult?> pickFilesAndroid() async {
+  final result = await _methodChannel.invokeMethod<Map>('pickFiles');
   if (result == null) {
     return null;
   }
 
-  return result.map((e) => FileInfoMapper.fromJson((e as Map).cast<String, dynamic>())).toList();
+  return PickFilesResult(
+    files: (result['files'] as List).map((e) => FileInfoMapper.fromJson((e as Map).cast<String, dynamic>())).toList(),
+    complete: result['complete'] as bool? ?? true,
+  );
+}
+
+/// Registers a listener for the asynchronous metadata updates of picked files.
+///
+/// The listener is replaced on every call, which is fine because updates are
+/// identified by the uri of the file they belong to.
+void listenPickerUpdates(void Function(PickerFileUpdate update) onUpdate) {
+  _pickerUpdateChannel.setMethodCallHandler((call) async {
+    if (call.method != 'onFileInfo') {
+      return;
+    }
+    final args = (call.arguments as Map).cast<String, dynamic>();
+    onUpdate(
+      PickerFileUpdate(
+        uri: args['uri'] as String,
+        name: args['name'] as String?,
+        size: (args['size'] as num?)?.toInt(),
+        lastModified: args['lastModified'] as String?,
+        failed: args['failed'] as bool? ?? false,
+      ),
+    );
+  });
 }
 
 /// Returns the global "Download" directory, e.g. /storage/emulated/0/Download.

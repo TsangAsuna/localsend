@@ -90,6 +90,14 @@ class SendNotifier extends Notifier<Map<String, SendSessionState>> {
     required List<CrossFile> files,
     required bool background,
   }) async {
+    // On Android, files are picked in two phases: the selection appears
+    // immediately and the metadata is loaded in the background.
+    // Wait for it, so the receiver gets the correct file sizes.
+    files = await ref.notifier(selectedSendingFilesProvider).resolveFiles(files);
+    if (files.isEmpty) {
+      return;
+    }
+
     // Pinned to the device the user picked, so the request is not sent at all
     // if someone else answers on that address.
     final client = ref.read(httpProvider).pinnedTo(target.fingerprint);

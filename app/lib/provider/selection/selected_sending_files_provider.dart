@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert' show jsonDecode, utf8;
 import 'dart:io';
 import 'dart:typed_data';
@@ -29,6 +30,53 @@ final selectedSendingFilesProvider = ReduxProvider<SelectedSendingFilesNotifier,
 class SelectedSendingFilesNotifier extends ReduxNotifier<List<CrossFile>> {
   @override
   List<CrossFile> init() => [];
+
+  /// Completed when the metadata of all selected files has been loaded.
+  Completer<void>? _pendingMetadataCompleter;
+
+  /// Whether some selected files still wait for their final metadata.
+  ///
+  /// On Android, the file picker reports the picked files immediately and the
+  /// (potentially slow) metadata is loaded in the background.
+  bool get hasPendingMetadata => state.any((file) => file.size < 0);
+
+  /// Waits until the metadata of all selected files has been loaded.
+  /// Resolves immediately when nothing is pending.
+  Future<void> waitForPendingMetadata() async {
+    if (!hasPendingMetadata) {
+      return;
+    }
+    _pendingMetadataCompleter ??= Completer<void>();
+    await _pendingMetadataCompleter!.future;
+  }
+
+  /// Waits until the metadata of [files] has been loaded and returns the
+  /// up-to-date list of files (the metadata may have been updated in place).
+  ///
+  /// Resolves after a timeout in the unlikely case that an update never
+  /// arrives, so that sending is never blocked indefinitely.
+  Future<List<CrossFile>> resolveFiles(List<CrossFile> files) async {
+    if (!files.any((file) => file.size < 0)) {
+      return files;
+    }
+    _logger.info('Waiting for the metadata of ${files.where((file) => file.size < 0).length} file(s)');
+    await waitForPendingMetadata().timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        _logger.warning('Timeout while waiting for the file metadata');
+      },
+    );
+
+    // Re-read the state because the files were updated in place.
+    return state.where((file) => files.any((f) => f.path == file.path)).toList();
+  }
+
+  void _resolvePendingMetadata() {
+    if (!hasPendingMetadata) {
+      _pendingMetadataCompleter?.complete();
+      _pendingMetadataCompleter = null;
+    }
+  }
 }
 
 /// Adds a message.
@@ -143,6 +191,57 @@ class AddFilesAction<T> extends AsyncReduxAction<SelectedSendingFilesNotifier, L
       ...state,
       ...newFiles,
     ]);
+  }
+
+  @override
+  void after() {
+    notifier._resolvePendingMetadata();
+  }
+}
+
+/// Updates the final metadata of a file that was added with incomplete
+/// information.
+///
+/// On Android, the file picker reports the picked files immediately and the
+/// (potentially slow) metadata is delivered later via
+/// [android_channel.listenPickerUpdates].
+class UpdateFileMetadataAction extends ReduxAction<SelectedSendingFilesNotifier, List<CrossFile>> {
+  final android_channel.PickerFileUpdate update;
+
+  UpdateFileMetadataAction(this.update);
+
+  @override
+  List<CrossFile> reduce() {
+    final index = state.indexWhere((file) => file.path == update.uri);
+    if (index < 0) {
+      // The file is no longer selected.
+      return state;
+    }
+
+    if (update.failed) {
+      _logger.warning('Could not read metadata of ${update.uri}');
+      return List<CrossFile>.unmodifiable([...state]..removeAt(index));
+    }
+
+    final oldFile = state[index];
+    final name = update.name ?? oldFile.name;
+    final newFile = CrossFile(
+      name: name,
+      fileType: name.guessFileType(),
+      size: update.size ?? oldFile.size,
+      thumbnail: oldFile.thumbnail,
+      asset: oldFile.asset,
+      path: oldFile.path,
+      bytes: oldFile.bytes,
+      lastModified: update.lastModified ?? oldFile.lastModified,
+      lastAccessed: oldFile.lastAccessed,
+    );
+    return List<CrossFile>.unmodifiable([...state]..[index] = newFile);
+  }
+
+  @override
+  void after() {
+    notifier._resolvePendingMetadata();
   }
 }
 
@@ -277,6 +376,7 @@ class RemoveSelectedFileAction extends ReduxAction<SelectedSendingFilesNotifier,
 
   @override
   void after() {
+    notifier._resolvePendingMetadata();
     if (state.isEmpty) {
       global.dispatchAsync(ClearCacheAction()); // ignore: discarded_futures
     }
@@ -363,6 +463,7 @@ class ClearSelectionAction extends ReduxAction<SelectedSendingFilesNotifier, Lis
 
   @override
   void after() {
+    notifier._resolvePendingMetadata();
     global.dispatchAsync(ClearCacheAction()); // ignore: discarded_futures
   }
 }

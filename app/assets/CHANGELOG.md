@@ -1,5 +1,7 @@
 ## Unreleased
 
+- fix(android): the selection list appears immediately after picking files; the (potentially slow) file metadata is loaded in the background
+- fix(android): picking files no longer fails completely when a single file cannot be read or its permission cannot be persisted (e.g. on HyperOS)
 - fix: avoid adding a trailing dot when renaming files without an extension (@ShlomoCode)
 - fix(macos): prevent intermittent MissingPluginException during startup (@ShlomoCode)
 - fix(macos): file sharing via Share Extension doesn't work in DMG builds (@ShlomoCode, @vdmkotai)
