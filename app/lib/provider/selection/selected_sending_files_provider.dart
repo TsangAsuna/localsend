@@ -246,11 +246,11 @@ class UpdateFileMetadataAction extends ReduxAction<SelectedSendingFilesNotifier,
   }
 }
 
-/// Updates the loaded file of a media asset that was added with incomplete
+/// Updates the metadata of a media asset that was added with incomplete
 /// information.
 ///
-/// Copying a media file out of the media store is slow, so it is done in the
-/// background after the selection has already been shown.
+/// This is only used as a fallback for assets whose size could not be
+/// determined via the content URI.
 class UpdateAssetFileAction extends ReduxAction<SelectedSendingFilesNotifier, List<CrossFile>> {
   final AssetEntity asset;
   final String? path;

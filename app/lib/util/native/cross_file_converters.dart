@@ -9,34 +9,78 @@ import 'package:localsend_isolates/model/file_type.dart';
 import 'package:localsend_isolates/rust/api/metadata.dart';
 import 'package:localsend_isolates/util/file_path_helper.dart';
 import 'package:share_handler/share_handler.dart';
+import 'package:uri_content/uri_content.dart';
 import 'package:wechat_assets_picker/wechat_assets_picker.dart';
+
+final _uriContent = UriContent();
 
 /// Utility functions to convert third party models to common [CrossFile] model.
 class CrossFileConverters {
-  /// Adds a media asset to the list without loading the actual file.
+  /// Adds a media asset to the list.
   ///
-  /// Copying the file out of the media store can take seconds, so it is
-  /// done in the background via [loadAssetFileDetails] after the selection
-  /// list has already been shown.
+  /// On Android, the file is never copied out of the media store: it is
+  /// streamed directly via its content URI during the transfer (the asset id
+  /// is the MediaStore id). Only the (fast) content length is queried, so the
+  /// selection list is ready immediately.
+  ///
+  /// On other platforms (iOS), the system copies the file into the app
+  /// sandbox, which is fast.
   static Future<CrossFile> convertAssetEntity(AssetEntity asset) async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      final mediaType = switch (asset.type) {
+        AssetType.video => 'video',
+        AssetType.audio => 'audio',
+        _ => 'image',
+      };
+      final uri = Uri.parse('content://media/external/$mediaType/media/${asset.id}');
+      final size = await _uriContent.getContentLengthOrNull(uri);
+      return CrossFile(
+        name: await asset.titleAsync,
+        fileType: asset.type == AssetType.video ? FileType.video : FileType.image,
+        size: size ?? -1,
+        thumbnail: null,
+        asset: asset,
+        path: uri.toString(),
+        bytes: null,
+        lastModified: asset.modifiedDateSecond != null && asset.modifiedDateSecond! > 0
+            ? DateTime.fromMillisecondsSinceEpoch(asset.modifiedDateSecond! * 1000, isUtc: true).toIso8601String()
+            : null,
+        lastAccessed: null,
+      );
+    }
+
+    final file = await asset.originFile;
+    if (file == null) {
+      return CrossFile(
+        name: await asset.titleAsync,
+        fileType: asset.type == AssetType.video ? FileType.video : FileType.image,
+        size: -1,
+        thumbnail: null,
+        asset: asset,
+        path: null, // loaded in the background
+        bytes: null,
+        lastModified: null,
+        lastAccessed: null,
+      );
+    }
+    final metadata = await readFileMetadata(path: file.path);
     return CrossFile(
       name: await asset.titleAsync,
       fileType: asset.type == AssetType.video ? FileType.video : FileType.image,
-      size: -1, // unknown until the file has been loaded
+      size: await file.length(),
       thumbnail: null,
       asset: asset,
-      path: null, // loaded in the background
+      path: file.path,
       bytes: null,
-      lastModified: null,
-      lastAccessed: null,
+      lastModified: metadata?.modified,
+      lastAccessed: metadata?.accessed,
     );
   }
 
-  /// Loads the actual file of an [asset] that was added with
-  /// [convertAssetEntity].
+  /// Copies the actual file of an [asset] out of the media store.
   ///
-  /// This copies the file out of the media store into the app cache, which
-  /// is required for sending it later.
+  /// This is only used as a fallback for assets whose size could not be
+  /// determined via the content URI (see [convertAssetEntity]).
   static Future<AssetFileDetails> loadAssetFileDetails(AssetEntity asset) async {
     final file = await asset.originFile;
     if (file == null) {

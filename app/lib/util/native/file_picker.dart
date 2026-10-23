@@ -288,17 +288,23 @@ Future<void> _pickMedia(BuildContext context, Ref ref) async {
           ),
         );
 
-    // Copy the files out of the media store in the background so that the
-    // selection list appears immediately.
+    // Fallback for assets whose size could not be determined via the
+    // content URI. Normal assets need no background work at all.
     // ignore: discarded_futures
     _loadAssetFiles(ref, result);
   }
 }
 
 /// Copies the files of the picked [assets] out of the media store in the
-/// background and reports them to the selection.
+/// background, but only for assets that are still missing their size.
 Future<void> _loadAssetFiles(Ref ref, List<AssetEntity> assets) async {
   for (final asset in assets) {
+    // The file is streamed directly from the media store, so there is
+    // nothing to do unless the size is still unknown.
+    final stillPending = ref.read(selectedSendingFilesProvider).any((file) => file.asset?.id == asset.id && file.size < 0);
+    if (!stillPending) {
+      continue;
+    }
     final AssetFileDetails details;
     try {
       details = await CrossFileConverters.loadAssetFileDetails(asset);
